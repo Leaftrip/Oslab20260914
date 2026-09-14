@@ -73,16 +73,28 @@ usertrap(void)
     uint64 sc = r_scause();
     uint64 va = r_stval();
     if((sc == 13 || sc == 15) && va < p->sz){
-      char *mem = kalloc();
-      if(mem == 0){
-        setkilled(p);
-      } else {
-        memset(mem, 0, PGSIZE);
-        if(mappages(p->pagetable, PGROUNDDOWN(va), PGSIZE, (uint64)mem,
-                    PTE_R|PTE_W|PTE_X|PTE_U) != 0){
-          kfree(mem);
+      pte_t *pte = walk(p->pagetable, PGROUNDDOWN(va), 0);
+      if(pte != 0 && (*pte & PTE_V) && (*pte & PTE_COW)){
+        // copy-on-write fault: give this process a private writable copy
+        if(cowcopy(p->pagetable, PGROUNDDOWN(va)) != 0)
           setkilled(p);
+      } else if(pte == 0 || (*pte & PTE_V) == 0){
+        // lazy page allocation
+        char *mem = kalloc();
+        if(mem == 0){
+          setkilled(p);
+        } else {
+          memset(mem, 0, PGSIZE);
+          if(mappages(p->pagetable, PGROUNDDOWN(va), PGSIZE, (uint64)mem,
+                      PTE_R|PTE_W|PTE_X|PTE_U) != 0){
+            kfree(mem);
+            setkilled(p);
+          }
         }
+      } else {
+        printf("usertrap(): unexpected scause %p pid=%d\n", sc, p->pid);
+        printf("            sepc=%p stval=%p\n", r_sepc(), va);
+        setkilled(p);
       }
     } else {
       printf("usertrap(): unexpected scause %p pid=%d\n", sc, p->pid);
