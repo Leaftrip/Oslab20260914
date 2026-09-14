@@ -264,13 +264,34 @@ growproc(int n)
 
   sz = p->sz;
   if(n > 0){
-    if((sz = uvmalloc(p->pagetable, sz, sz + n, PTE_W)) == 0) {
-      return -1;
-    }
+    // lazy allocation: only extend the size, defer real page allocation
+    // until the page is actually touched (handled in usertrap()).
+    sz += n;
   } else if(n < 0){
     sz = uvmdealloc(p->pagetable, sz, sz + n);
   }
   p->sz = sz;
+  return 0;
+}
+
+// Lazy-allocate a physical page at page-aligned va during copyin/copyout,
+// if va lies within the current process's size.  Returns 0 on success.
+int
+lazyalloc(pagetable_t pagetable, uint64 va)
+{
+  struct proc *p = myproc();
+  char *mem;
+
+  if(p == 0 || p->pagetable != pagetable || va >= p->sz)
+    return -1;
+  mem = kalloc();
+  if(mem == 0)
+    return -1;
+  memset(mem, 0, PGSIZE);
+  if(mappages(pagetable, va, PGSIZE, (uint64)mem, PTE_R|PTE_W|PTE_U) != 0){
+    kfree(mem);
+    return -1;
+  }
   return 0;
 }
 

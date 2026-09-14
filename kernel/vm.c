@@ -185,9 +185,9 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
 
   for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
     if((pte = walk(pagetable, a, 0)) == 0)
-      panic("uvmunmap: walk");
+      continue;   // lazy: page-table page may not exist yet
     if((*pte & PTE_V) == 0)
-      panic("uvmunmap: not mapped");
+      continue;   // lazy: page not yet allocated
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
     if(do_free){
@@ -319,9 +319,9 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
-      panic("uvmcopy: pte should exist");
+      continue;   // lazy: page-table page may not exist yet
     if((*pte & PTE_V) == 0)
-      panic("uvmcopy: page not present");
+      continue;   // lazy: page not yet allocated
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
     if((mem = kalloc()) == 0)
@@ -366,8 +366,12 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
     if(va0 >= MAXVA)
       return -1;
     pte = walk(pagetable, va0, 0);
-    if(pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0 ||
-       (*pte & PTE_W) == 0)
+    if(pte == 0 || (*pte & PTE_V) == 0){
+      if(lazyalloc(pagetable, va0) != 0)
+        return -1;
+      pte = walk(pagetable, va0, 0);
+    }
+    if((*pte & PTE_U) == 0 || (*pte & PTE_W) == 0)
       return -1;
     pa0 = PTE2PA(*pte);
     n = PGSIZE - (dstva - va0);
@@ -389,12 +393,19 @@ int
 copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
   uint64 n, va0, pa0;
+  pte_t *pte;
 
   while(len > 0){
     va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
+    pte = walk(pagetable, va0, 0);
+    if(pte == 0 || (*pte & PTE_V) == 0){
+      if(lazyalloc(pagetable, va0) != 0)
+        return -1;
+      pte = walk(pagetable, va0, 0);
+    }
+    if((*pte & PTE_U) == 0)
       return -1;
+    pa0 = PTE2PA(*pte);
     n = PGSIZE - (srcva - va0);
     if(n > len)
       n = len;
@@ -416,12 +427,19 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 {
   uint64 n, va0, pa0;
   int got_null = 0;
+  pte_t *pte;
 
   while(got_null == 0 && max > 0){
     va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
+    pte = walk(pagetable, va0, 0);
+    if(pte == 0 || (*pte & PTE_V) == 0){
+      if(lazyalloc(pagetable, va0) != 0)
+        return -1;
+      pte = walk(pagetable, va0, 0);
+    }
+    if((*pte & PTE_U) == 0)
       return -1;
+    pa0 = PTE2PA(*pte);
     n = PGSIZE - (srcva - va0);
     if(n > max)
       n = max;
