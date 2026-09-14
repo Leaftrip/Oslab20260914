@@ -250,6 +250,9 @@ userinit(void)
   safestrcpy(p->name, "initcode", sizeof(p->name));
   p->cwd = namei("/");
 
+  // Task 1 (memory): print the three-level page table of the init process.
+  vmprint(p->pagetable);
+
   p->state = RUNNABLE;
 
   release(&p->lock);
