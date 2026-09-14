@@ -190,6 +190,7 @@ UPROGS=\
 	$U/_zombie\
 	$U/_lazytests\
 	$U/_cowtest\
+	$U/_mmaptest\
 
 
 

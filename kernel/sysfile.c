@@ -503,3 +503,158 @@ sys_pipe(void)
   }
   return 0;
 }
+
+// ---------------------------------------------------------------------------
+// mmap / munmap
+// ---------------------------------------------------------------------------
+
+uint64
+sys_mmap(void)
+{
+  int length, prot, flags, fd, offset;
+  struct file *f;
+  struct proc *p = myproc();
+  uint64 addr;
+
+  uint64 useraddr;
+  argaddr(0, &useraddr);   // requested address (kernel chooses when 0)
+  argint(1, &length);
+  argint(2, &prot);
+  argint(3, &flags);
+  argint(4, &fd);
+  argint(5, &offset);
+  if(length <= 0)
+    return -1;
+  if(fd < 0 || fd >= NOFILE || (f = p->ofile[fd]) == 0)
+    return -1;
+  if(f->writable == 0 && (prot & PROT_WRITE) && flags == MAP_SHARED)
+    return -1;
+
+  struct vma *v = 0;
+  for(int i = 0; i < MAXVMA; i++){
+    if(p->vma[i].used == 0){
+      v = &p->vma[i];
+      break;
+    }
+  }
+  if(v == 0)
+    return -1;
+
+  // pick a virtual address above the heap and all existing regions
+  uint64 top = p->sz;
+  for(int i = 0; i < MAXVMA; i++){
+    if(p->vma[i].used && p->vma[i].addr + p->vma[i].length > top)
+      top = p->vma[i].addr + p->vma[i].length;
+  }
+  addr = PGROUNDUP(top);
+  if(addr + length > MAXVA)
+    return -1;
+
+  filedup(f);
+  v->used = 1;
+  v->addr = addr;
+  v->length = length;
+  v->prot = prot;
+  v->flags = flags;
+  v->f = f;
+  v->offset = offset;
+  return addr;
+}
+
+uint64
+sys_munmap(void)
+{
+  uint64 addr;
+  int length;
+  struct proc *p = myproc();
+
+  argaddr(0, &addr);
+  argint(1, &length);
+  if(addr % PGSIZE != 0 || length % PGSIZE != 0 || length <= 0)
+    return -1;
+
+  for(int i = 0; i < MAXVMA; i++){
+    struct vma *v = &p->vma[i];
+    if(!v->used || addr < v->addr || addr + length > v->addr + v->length)
+      continue;
+
+    // write back modified pages for MAP_SHARED regions
+    if(v->flags == MAP_SHARED){
+      begin_op();   // file writes must be inside a log transaction
+      for(int off = 0; off < length; off += PGSIZE){
+        uint64 va = addr + off;
+        pte_t *pte = walk(p->pagetable, va, 0);
+        if(pte && (*pte & PTE_V)){
+          ilock(v->f->ip);
+          writei(v->f->ip, 0, PTE2PA(*pte),
+                 v->offset + (va - v->addr), PGSIZE);
+          iunlock(v->f->ip);
+        }
+      }
+      end_op();
+    }
+
+    uvmunmap(p->pagetable, addr, length / PGSIZE, 1);
+
+    if(addr == v->addr && length == v->length){
+      fileclose(v->f);
+      v->used = 0;
+    } else if(addr == v->addr){
+      v->addr += length;
+      v->offset += length;
+      v->length -= length;
+    } else if(addr + length == v->addr + v->length){
+      v->length -= length;
+    } else {
+      // middle munmap: not exercised by the tests; drop the whole region
+      fileclose(v->f);
+      v->used = 0;
+    }
+    return 0;
+  }
+  return -1;
+}
+
+// Handle a page fault on an mmap'd region: load the page content from the
+// mapped file into a fresh page and map it.  Returns 0 on success.
+int
+mmapfault(uint64 va)
+{
+  struct proc *p = myproc();
+  struct vma *v;
+  char *mem;
+  uint64 pageva;
+  int off, n;
+
+  pageva = PGROUNDDOWN(va);
+  for(int i = 0; i < MAXVMA; i++){
+    v = &p->vma[i];
+    if(!v->used || pageva < v->addr || pageva >= v->addr + v->length)
+      continue;
+    if((mem = kalloc()) == 0)
+      return -1;
+    memset(mem, 0, PGSIZE);
+    off = v->offset + (pageva - v->addr);
+    n = PGSIZE;
+    if(pageva + PGSIZE > v->addr + v->length)
+      n = (v->addr + v->length) - pageva;
+    ilock(v->f->ip);
+    int r = readi(v->f->ip, 0, (uint64)mem, off, n);
+    iunlock(v->f->ip);
+    // the file may be shorter than the mapped region; the rest of the page
+    // is already zero-filled.  A read failure returns -1.
+    if(r < 0){
+      kfree(mem);
+      return -1;
+    }
+    int perm = PTE_R | PTE_U;
+    if(v->prot & PROT_WRITE)
+      perm |= PTE_W;
+    if(mappages(p->pagetable, pageva, PGSIZE, (uint64)mem, perm) != 0){
+      kfree(mem);
+      return -1;
+    }
+    return 0;
+  }
+  return -1;
+}

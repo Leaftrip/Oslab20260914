@@ -124,6 +124,7 @@ allocproc(void)
 found:
   p->pid = allocpid();
   p->state = USED;
+  memset(p->vma, 0, sizeof(p->vma));
 
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
@@ -329,6 +330,13 @@ fork(void)
       np->ofile[i] = filedup(p->ofile[i]);
   np->cwd = idup(p->cwd);
 
+  // inherit mmap regions (VMA array) and keep the backing file references.
+  for(i = 0; i < MAXVMA; i++){
+    np->vma[i] = p->vma[i];
+    if(np->vma[i].used)
+      np->vma[i].f = filedup(np->vma[i].f);
+  }
+
   safestrcpy(np->name, p->name, sizeof(p->name));
 
   pid = np->pid;
@@ -378,6 +386,19 @@ exit(int status)
       struct file *f = p->ofile[fd];
       fileclose(f);
       p->ofile[fd] = 0;
+    }
+  }
+
+  // release mmap regions: unmap pages and drop file references.
+  // done here (not in freeproc) because freeproc runs while holding
+  // wait_lock and fileclose may re-acquire it.
+  for(int i = 0; i < MAXVMA; i++){
+    if(p->vma[i].used){
+      if(p->pagetable)
+        uvmunmap(p->pagetable, p->vma[i].addr,
+                 PGROUNDUP(p->vma[i].length)/PGSIZE, 1);
+      fileclose(p->vma[i].f);
+      p->vma[i].used = 0;
     }
   }
 

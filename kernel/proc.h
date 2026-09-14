@@ -81,6 +81,18 @@ struct trapframe {
 
 enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
+// mmap: a virtual memory area for mmap/munmap.
+#define MAXVMA 16
+struct vma {
+  int used;          // slot in use?
+  uint64 addr;       // start virtual address
+  int length;        // length in bytes
+  int prot;          // PROT_READ / PROT_WRITE (see fcntl.h)
+  int flags;         // MAP_SHARED / MAP_PRIVATE
+  struct file *f;    // backing file
+  int offset;        // file offset
+};
+
 // Per-process state
 struct proc {
   struct spinlock lock;
@@ -104,4 +116,5 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+  struct vma vma[MAXVMA];      // mmap regions
 };
